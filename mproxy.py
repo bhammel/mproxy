@@ -76,30 +76,31 @@ class Proxy:
                             + str(addr[0]) + ")")
                 else:
                     break
+            s.close()
+            conn.close()
         except socket.error, (value, message):
             s.close()
             conn.close()
-            pass
 
 
     def parse_request(self, data):
-        host = ""
+        host = ''
         port = 0
         # Client browser request appears here
         try:
             first_line = data.split('\n')[0]
             url = first_line.split(' ')[1]
             # Find the position of "://"
-            http_pos = url.find("://")
+            http_pos = url.find('://')
             if http_pos < 0:
                 temp = url
             else:
                 # Get the rest of the url
                 temp = url[(http_pos + 3):]
             # Find the position of the port (if any)
-            port_pos = temp.find(":")
+            port_pos = temp.find(':')
             # Find the end of the host
-            host_pos = temp.find("/")
+            host_pos = temp.find('/')
             if host_pos < 0:
                 host_pos = len(temp)
             if port_pos < 0 or host_pos < port_pos:
@@ -152,5 +153,5 @@ def main():
     proxy.start()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
