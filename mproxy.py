@@ -1,6 +1,7 @@
 import argparse
 import logging
 import os
+import Queue
 import select
 import socket
 import string
@@ -31,31 +32,46 @@ def log_message(message, type):
 class Proxy:
 
     def __init__(self, port, thread_count, timeout):
-        self.thread_count = thread_count
         self.timeout = timeout
+        self.queue = Queue.Queue()
+        print("Creating workers...")
+        for _ in range(thread_count):
+            thread = threading.Thread(target=self.get_next_request)
+            thread.daemon = True
+            thread.start()
+        print("All workers created")
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.sock.bind(('', port))
-            print("Proxy server successfully binded to port " + str(port))
             self.sock.listen(MAXCONN)
             print("Proxy server listening on port " + str(port))
         except Exception, e:
             print_and_exit(1, "Unable to initialize socket")
 
 
+    def get_next_request(self):
+        while True:
+            try:
+                conn, data, addr = self.queue.get()
+                self.proxy_server(conn, data, addr)
+                self.queue.task_done()
+            except Queue.Empty:
+                continue
+
+
     def start(self):
-        print("Starting proxy server...")
+        print("Starting proxy server...\n")
         while True:
             try:
                 conn, addr = self.sock.accept()
                 data = conn.recv(BUFSIZE)
-                thread = threading.Thread(target=self.proxy_server,
-                                          args=(conn, data, addr))
-                thread.start()
+                self.queue.put((conn, data, addr))
+            except Queue.Full:
+                continue
             except KeyboardInterrupt:
                 self.sock.close()
-                print_and_exit(0, "Closing connection")
+                print_and_exit(0, "\nClosing connection")
         self.sock.close()
 
 
@@ -67,18 +83,25 @@ class Proxy:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((host, port))
+            if self.timeout > 0:
+                s.settimeout(self.timeout)
             s.send(data)
             while True:
-                reply = s.recv(BUFSIZE)
-                if len(reply) > 0:
-                    conn.send(reply)
-                    print("Request processed for " + str(host) + " ("
-                            + str(addr[0]) + ")")
-                else:
+                try:
+                    response = s.recv(BUFSIZE)
+                    if len(response) > 0:
+                        conn.send(response)
+                        print("Request processed for " + str(host) + " ("
+                                + str(addr[0]) + ")")
+                    else:
+                        break
+                except socket.timeout, e:
+                    print(e)
                     break
             s.close()
             conn.close()
-        except socket.error, (value, message):
+        except socket.error, e:
+            print(e)
             s.close()
             conn.close()
 
