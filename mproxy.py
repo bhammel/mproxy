@@ -1,4 +1,5 @@
 import argparse
+import errno
 import logging
 import os
 import Queue
@@ -12,9 +13,9 @@ import traceback
 MAXCONN = 10
 BUFSIZE = 4096
 
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-log = False
+logdir = None
+index = 0
+index_semaphore = threading.BoundedSemaphore()
 
 
 def print_and_exit(status, message):
@@ -54,7 +55,7 @@ class Proxy:
         while True:
             try:
                 conn, data, addr = self.queue.get()
-                self.proxy_server(conn, data, addr)
+                self.process_request(conn, data, addr)
                 self.queue.task_done()
             except Queue.Empty:
                 continue
@@ -71,26 +72,38 @@ class Proxy:
                 continue
             except KeyboardInterrupt:
                 self.sock.close()
-                print_and_exit(0, "\nClosing connection")
+                print("\n")
+                print_and_exit(0, "Closing connection")
         self.sock.close()
 
 
-    def proxy_server(self, conn, data, addr):
+    def process_request(self, conn, data, addr):
+        global logdir
+        global index
+        global index_semaphore
         host, port = self.parse_request(data)
         print("Host: " + str(host))
         print("Port: " + str(port))
         print("Address: " + str(addr[0]) + "\n")
+        index_semaphore.acquire()
+        filename = logdir + str(index) + "_" + str(addr[0]) + "_" + str(host)
+        index += 1
+        index_semaphore.release()
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((host, port))
             if self.timeout > 0:
                 s.settimeout(self.timeout)
             s.send(data)
+            with open(filename, "a+") as f:
+                f.write(data + "\n")
             while True:
                 try:
                     response = s.recv(BUFSIZE)
                     if len(response) > 0:
                         conn.send(response)
+                        with open(filename, "a+") as f:
+                            f.write(response)
                         print("Request processed for " + str(host) + " ("
                                 + str(addr[0]) + ")")
                     else:
@@ -140,7 +153,7 @@ class Proxy:
 
 
 def main():
-    global log
+    global logdir
     parser = argparse.ArgumentParser(description='A simple HTTP proxy.',
                                      prog='mproxy')
     parser.add_argument('-v', '--version',
@@ -157,7 +170,6 @@ def main():
                         help='time (seconds) to wait before giving up '
                              '[default: infinite]')
     parser.add_argument('-l', '--log',
-                        action='store_true',
                         help='logs all requests and responses')
     args = parser.parse_args()
     if args.port < 1 or args.port > 65535:
@@ -166,12 +178,17 @@ def main():
         print_and_exit(4, "Error: Invalid number of workers")
     elif args.timeout < -1:
         print_and_exit(4, "Error: Invalid timeout")
+    if not os.path.exists(args.log):
+        try:
+            os.makedirs(args.log)
+        except OSError as exception:
+            if exception.errno != errno.EEXIST:
+                raise
+    logdir = args.log + "/"
     print("Port: " + str(args.port))
     print("Numworkers: " + str(args.numworker))
     print("Timeout: " + str(args.timeout))
-    print("Logfile: " + str(args.log) + "\n")
-    if args.log == True:
-        log = True
+    print("Logdir: " + logdir + "\n")
     proxy = Proxy(args.port, args.numworker, args.timeout)
     proxy.start()
 
