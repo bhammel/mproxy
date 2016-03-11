@@ -1,21 +1,13 @@
 import argparse
 import errno
-import logging
 import os
 import Queue
-import select
 import socket
-import string
 import sys
 import threading
-import traceback
 
 MAXCONN = 10
 BUFSIZE = 4096
-
-logdir = None
-index = 0
-index_semaphore = threading.BoundedSemaphore()
 
 
 def print_and_exit(status, message):
@@ -23,17 +15,13 @@ def print_and_exit(status, message):
     sys.exit(status)
 
 
-def log_message(message, type):
-    if log == True and type == 'info':
-        logger.info(message)
-    else:
-        logger.debug(message)
-
-
 class Proxy:
 
-    def __init__(self, port, thread_count, timeout):
+    def __init__(self, port, thread_count, timeout, logdir):
         self.timeout = timeout
+        self.logdir = logdir
+        self.index = 0
+        self.index_semaphore = threading.BoundedSemaphore()
         self.queue = Queue.Queue()
         print("Creating workers...")
         for _ in range(thread_count):
@@ -47,7 +35,7 @@ class Proxy:
             self.sock.bind(('', port))
             self.sock.listen(MAXCONN)
             print("Proxy server listening on port " + str(port))
-        except Exception, e:
+        except Exception as ex:
             print_and_exit(1, "Unable to initialize socket")
 
 
@@ -78,17 +66,14 @@ class Proxy:
 
 
     def process_request(self, conn, data, addr):
-        global logdir
-        global index
-        global index_semaphore
         host, port = self.parse_request(data)
         print("Host: " + str(host))
         print("Port: " + str(port))
         print("Address: " + str(addr[0]) + "\n")
-        index_semaphore.acquire()
-        filename = logdir + str(index) + "_" + str(addr[0]) + "_" + str(host)
-        index += 1
-        index_semaphore.release()
+        self.index_semaphore.acquire()
+        filename = self.logdir + str(self.index) + "_" + str(addr[0]) + "_" + str(host)
+        self.index += 1
+        self.index_semaphore.release()
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((host, port))
@@ -108,13 +93,13 @@ class Proxy:
                                 + str(addr[0]) + ")")
                     else:
                         break
-                except socket.timeout, e:
-                    print(e)
+                except socket.timeout as ex:
+                    print(ex)
                     break
             s.close()
             conn.close()
-        except socket.error, e:
-            print(e)
+        except socket.error as ex:
+            print(ex)
             s.close()
             conn.close()
 
@@ -147,13 +132,12 @@ class Proxy:
                 # Specific port
                 port = int((temp[(port_pos + 1):])[:host_pos - port_pos - 1])
                 host = temp[:port_pos]
-        except Exception, e:
+        except Exception as ex:
             pass
         return host, port
 
 
 def main():
-    global logdir
     parser = argparse.ArgumentParser(description='A simple HTTP proxy.',
                                      prog='mproxy')
     parser.add_argument('-v', '--version',
@@ -181,15 +165,15 @@ def main():
     if not os.path.exists(args.log):
         try:
             os.makedirs(args.log)
-        except OSError as exception:
-            if exception.errno != errno.EEXIST:
+        except OSError as ex:
+            if ex.errno != errno.EEXIST:
                 raise
     logdir = args.log + "/"
     print("Port: " + str(args.port))
     print("Numworkers: " + str(args.numworker))
     print("Timeout: " + str(args.timeout))
     print("Logdir: " + logdir + "\n")
-    proxy = Proxy(args.port, args.numworker, args.timeout)
+    proxy = Proxy(args.port, args.numworker, args.timeout, logdir)
     proxy.start()
 
 
