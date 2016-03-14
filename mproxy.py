@@ -21,7 +21,7 @@ class Proxy:
         self.timeout = timeout
         self.logdir = logdir
         self.index = 0
-        self.index_semaphore = threading.BoundedSemaphore()
+        self.index_lock = threading.Lock()
         self.queue = Queue.Queue()
         print("Creating workers...")
         for _ in range(thread_count):
@@ -54,7 +54,14 @@ class Proxy:
         while True:
             try:
                 conn, addr = self.sock.accept()
-                data = conn.recv(BUFSIZE)
+                if self.timeout > 0:
+                    conn.settimeout(self.timeout)
+                try:
+                    data = conn.recv(BUFSIZE)
+                except socket.timeout as ex:
+                    print(ex)
+                    conn.close()
+                    continue
                 self.queue.put((conn, data, addr))
             except Queue.Full:
                 continue
@@ -70,10 +77,12 @@ class Proxy:
         print("Host: " + str(host))
         print("Port: " + str(port))
         print("Address: " + str(addr[0]) + "\n")
-        self.index_semaphore.acquire()
-        filename = self.logdir + str(self.index) + "_" + str(addr[0]) + "_" + str(host)
-        self.index += 1
-        self.index_semaphore.release()
+        self.index_lock.acquire()
+        try:
+            filename = self.logdir + str(self.index) + "_" + str(addr[0]) + "_" + str(host)
+            self.index += 1
+        finally:
+            self.index_lock.release()
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((host, port))
