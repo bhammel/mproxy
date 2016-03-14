@@ -20,6 +20,9 @@ class Proxy:
     def __init__(self, port, thread_count, timeout, logdir):
         self.timeout = timeout
         self.logdir = logdir
+        self.log = False
+        if not logdir is None:
+            self.log = True
         self.index = 0
         self.index_lock = threading.Lock()
         self.queue = Queue.Queue()
@@ -41,12 +44,9 @@ class Proxy:
 
     def get_next_request(self):
         while True:
-            try:
-                conn, data, addr = self.queue.get()
-                self.process_request(conn, data, addr)
-                self.queue.task_done()
-            except Queue.Empty:
-                continue
+            conn, data, addr = self.queue.get()
+            self.process_request(conn, data, addr)
+            self.queue.task_done()
 
 
     def start(self):
@@ -61,10 +61,8 @@ class Proxy:
                 except socket.timeout as ex:
                     print(ex)
                     conn.close()
-                    continue
-                self.queue.put((conn, data, addr))
-            except Queue.Full:
-                continue
+                else:
+                    self.queue.put((conn, data, addr))
             except KeyboardInterrupt:
                 self.sock.close()
                 print("\n")
@@ -77,27 +75,31 @@ class Proxy:
         print("Host: " + str(host))
         print("Port: " + str(port))
         print("Address: " + str(addr[0]) + "\n")
-        self.index_lock.acquire()
-        try:
-            filename = self.logdir + str(self.index) + "_" + str(addr[0]) + "_" + str(host)
-            self.index += 1
-        finally:
-            self.index_lock.release()
+        filename = ''
+        if self.log:
+            self.index_lock.acquire()
+            try:
+                filename = self.logdir + str(self.index) + "_" + str(addr[0]) + "_" + str(host)
+                self.index += 1
+            finally:
+                self.index_lock.release()
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((host, port))
             if self.timeout > 0:
                 s.settimeout(self.timeout)
             s.send(data)
-            with open(filename, "a+") as f:
-                f.write(data + "\n")
+            if self.log:
+                with open(filename, "a+") as f:
+                    f.write(data + "\n")
             while True:
                 try:
                     response = s.recv(BUFSIZE)
                     if len(response) > 0:
                         conn.send(response)
-                        with open(filename, "a+") as f:
-                            f.write(response)
+                        if self.log:
+                            with open(filename, "a+") as f:
+                                f.write(response)
                         print("Request processed for " + str(host) + " ("
                                 + str(addr[0]) + ")")
                     else:
@@ -163,6 +165,7 @@ def main():
                         help='time (seconds) to wait before giving up '
                              '[default: infinite]')
     parser.add_argument('-l', '--log',
+                        nargs='?', default=None, const=os.getcwd(),
                         help='logs all requests and responses')
     args = parser.parse_args()
     if args.port < 1 or args.port > 65535:
@@ -171,17 +174,23 @@ def main():
         print_and_exit(4, "Error: Invalid number of workers")
     elif args.timeout < -1:
         print_and_exit(4, "Error: Invalid timeout")
-    if not os.path.exists(args.log):
-        try:
-            os.makedirs(args.log)
-        except OSError as ex:
-            if ex.errno != errno.EEXIST:
-                raise
-    logdir = args.log + "/"
+    logdir = args.log
+    if not logdir is None:
+        if not os.path.exists(logdir):
+            try:
+                os.makedirs(logdir)
+            except OSError as ex:
+                if ex.errno != errno.EEXIST:
+                    raise
+        if not logdir.endswith("/"):
+            logdir = logdir + "/"
     print("Port: " + str(args.port))
     print("Numworkers: " + str(args.numworker))
     print("Timeout: " + str(args.timeout))
-    print("Logdir: " + logdir + "\n")
+    if not logdir is None:
+        print("Logdir: " + logdir + "\n")
+    else:
+        print("Logdir: None\n")
     proxy = Proxy(args.port, args.numworker, args.timeout, logdir)
     proxy.start()
 
