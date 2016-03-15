@@ -1,17 +1,27 @@
 import argparse
 import errno
+import logging
 import os
 import Queue
+import select
 import socket
+import ssl
 import sys
 import threading
 
-MAXCONN = 10
+
+MAXCONN = 200
 BUFSIZE = 4096
 
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("mproxy")
 
-def print_and_exit(status, message):
-    print("Exit " + str(status) + ": " + message)
+
+def print_and_exit(status, message, level):
+    if level == logging.ERROR:
+        logger.error("Exit %d: %s", status, message)
+    else:
+        logger.info("Exit %d: %s", status, message)
     sys.exit(status)
 
 
@@ -26,20 +36,20 @@ class Proxy:
         self.index = 0
         self.index_lock = threading.Lock()
         self.queue = Queue.Queue()
-        print("Creating workers...")
+        logger.info("Creating workers...")
         for _ in range(thread_count):
             thread = threading.Thread(target=self.get_next_request)
             thread.daemon = True
             thread.start()
-        print("All workers created")
+        logger.info("All workers created")
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.sock.bind(('', port))
             self.sock.listen(MAXCONN)
-            print("Proxy server listening on port " + str(port))
+            logger.info("Proxy server listening on port %s", str(port))
         except Exception as ex:
-            print_and_exit(1, "Unable to initialize socket")
+            print_and_exit(1, "Unable to initialize socket", logging.ERROR)
 
 
     def get_next_request(self):
@@ -50,31 +60,35 @@ class Proxy:
 
 
     def start(self):
-        print("Starting proxy server...\n")
+        logger.info("Starting proxy server...\n")
         while True:
             try:
                 conn, addr = self.sock.accept()
                 if self.timeout > 0:
                     conn.settimeout(self.timeout)
                 try:
-                    data = conn.recv(BUFSIZE)
+                    ready_socks = select.select([conn], [], [], 1)
+                    if ready_socks[0]:
+                        data = conn.recv(BUFSIZE)
+                    else:
+                        conn.close()
+                        continue
                 except socket.timeout as ex:
-                    print(ex)
+                    logger.error("%s", ex)
                     conn.close()
                 else:
                     self.queue.put((conn, data, addr))
             except KeyboardInterrupt:
                 self.sock.close()
-                print("\n")
-                print_and_exit(0, "Closing connection")
+                print_and_exit(0, "Closing connection", logging.INFO)
         self.sock.close()
 
 
     def process_request(self, conn, data, addr):
         host, port = self.parse_request(data)
-        print("Host: " + str(host))
-        print("Port: " + str(port))
-        print("Address: " + str(addr[0]) + "\n")
+        logger.info("Host: %s", host)
+        logger.info("Port: %d", port)
+        logger.info("Address: %s\n", addr[0])
         filename = ''
         if self.log:
             self.index_lock.acquire()
@@ -94,23 +108,26 @@ class Proxy:
                     f.write(data + "\n")
             while True:
                 try:
-                    response = s.recv(BUFSIZE)
+                    ready_socks = select.select([s], [], [], 1)
+                    if ready_socks[0]:
+                        response = s.recv(BUFSIZE)
+                    else:
+                        break
                     if len(response) > 0:
                         conn.send(response)
                         if self.log:
                             with open(filename, "a+") as f:
                                 f.write(response)
-                        print("Request processed for " + str(host) + " ("
-                                + str(addr[0]) + ")")
+                        logger.info("Request processed for %s (%s)", host, addr[0])
                     else:
                         break
                 except socket.timeout as ex:
-                    print(ex)
+                    logger.error("%s", ex)
                     break
             s.close()
             conn.close()
         except socket.error as ex:
-            print(ex)
+            logger.error("%s", ex)
             s.close()
             conn.close()
 
@@ -152,8 +169,9 @@ def main():
     parser = argparse.ArgumentParser(description='A simple HTTP proxy.',
                                      prog='mproxy')
     parser.add_argument('-v', '--version',
-                        action='version', version='%(prog)s 0.1 Brandon Hammel',
-                        help='prints version information and exit')
+                        action='version',
+                        version='%(prog)s 0.1 Copyright (C) Brandon Hammel',
+                        help='show version information and exit')
     parser.add_argument('-p', '--port',
                         type=int, required=True,
                         help='port the server will be listening on')
@@ -169,11 +187,11 @@ def main():
                         help='logs all requests and responses')
     args = parser.parse_args()
     if args.port < 1 or args.port > 65535:
-        print_and_exit(4, "Error: Invalid port")
+        print_and_exit(4, "Invalid port", logging.ERROR)
     elif args.numworker < 1:
-        print_and_exit(4, "Error: Invalid number of workers")
+        print_and_exit(4, "Invalid number of workers", logging.ERROR)
     elif args.timeout < -1:
-        print_and_exit(4, "Error: Invalid timeout")
+        print_and_exit(4, "Invalid timeout", logging.ERROR)
     logdir = args.log
     if not logdir is None:
         if not os.path.exists(logdir):
@@ -184,13 +202,13 @@ def main():
                     raise
         if not logdir.endswith("/"):
             logdir = logdir + "/"
-    print("Port: " + str(args.port))
-    print("Numworkers: " + str(args.numworker))
-    print("Timeout: " + str(args.timeout))
+    logger.debug("Port: %d", args.port)
+    logger.debug("Numworkers: %d", args.numworker)
+    logger.debug("Timeout: %d", args.timeout)
     if not logdir is None:
-        print("Logdir: " + logdir + "\n")
+        logger.debug("Logdir: %s\n", logdir)
     else:
-        print("Logdir: None\n")
+        logger.debug("Logdir: None\n")
     proxy = Proxy(args.port, args.numworker, args.timeout, logdir)
     proxy.start()
 
